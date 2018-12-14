@@ -4,11 +4,18 @@
 const express = require('express');
 const cors = require('cors');
 const superagent = require('superagent');
+const pg = require('pg');
+
 
 //Load env vars;
 require('dotenv').config();
 
 const PORT = process.env.PORT || 3000;
+
+//postgres
+const client = new pg.Client(process.env.DATABASE_URL);
+client.connect();
+client.on('error', err => console.error(err));
 
 //app
 const app = express();
@@ -23,10 +30,25 @@ app.get('/movies', getMovies);
 //Handlers
 
 function getLocation(req, res){
-  return searchToLatLong(req.query.data)
-    .then(locationData => {
-      res.send(locationData);
-    });
+  let query = req.query.data;
+  console.log(req.query.data);
+  //check DB for data
+  const SQL = 'SELECT * FROM locations where search_query=$1';
+  const values = [query];
+  return client.query(SQL,values)
+    .then(data=>{
+      if (data.rowCount){
+        console.log('data retrieved from DB');
+        res.status(200).send(data.rows[0]);
+      }else{
+        console.log('data not retrieved from DB');
+        return searchToLatLong(req.query.data)
+          .then(locationData => {
+            res.send(locationData);
+          });
+      }
+    })
+    .catch(err=>{console.error(err)});
 }
 
 function getWeather(req, res){
@@ -89,19 +111,23 @@ function searchToLatLong(query){
   const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${query}&key=${process.env.GEOCODING_API_KEY}`;
   return superagent.get(url)
     .then(geoData => {
-    // console.log(geoData.body);
       const location = new Location(geoData.body.results[0]);
-      return location;
+      let SQLN = `INSERT INTO locations 
+        (search_query, formatted_query, latitude, longitude)
+        VALUES($1, $2, $3, $4)`;
+        // store it in our db
+      return client.query(SQLN, [query, location.formatted_query, location.latitude, location.longitude])
+        .then(() =>{
+          return location;
+        })
+        .catch(err =>console.error(err));
     })
-    .catch(err => console.error(err));
 }
 
 function searchForWeather(query){
   const url = `https://api.darksky.net/forecast/${process.env.DARKSKY_API_KEY}/${query.latitude},${query.longitude}`;
-  // let weatherData = require('./data/darksky.json');
   return superagent.get(url)
     .then(weatherData => {
-    // console.log(weatherData.body.daily.data);
       return weatherData.body.daily.data.map(day => {
         let weather = new Forecast(day);
         return weather;
@@ -116,7 +142,6 @@ function searchForYelp(query){
     .set('Authorization', `Bearer ${process.env.YELP_API_KEY}`)
     .then(yelpData => {
       return yelpData.body.businesses.map(meal => {
-        // console.log(yelpData.body.businesses);
         let yelp = new Yelp(meal);
         return yelp;
       });
@@ -126,10 +151,10 @@ function searchForYelp(query){
 
 function searchForMovies(query, req){
   const url = `https://api.themoviedb.org/3/search/movie?api_key=${process.env.MOVIE_API_KEY}&query=${query.short_name}`;
-  console.log(url);
+
   return superagent.get(url)
     .then(movieData => {
-      console.log(movieData.body.results);
+      //      console.log(movieData.body.results);
       return movieData.body.results.map(movie => {
         let movies = new Movie(movie);
         return movies;
@@ -149,4 +174,5 @@ function errorMessage(res){
 
 app.listen(PORT, () => {
   console.log(`app is up on port : ${PORT}`);
-});
+})
+
